@@ -221,6 +221,30 @@ breeze
         $this->assertEquals($expected, $compiler->compileString($string));
     }
 
+    public function testCanStatementsAreCompiled()
+    {
+        $compiler = new BladeCompiler($this->getFiles(), __DIR__);
+        $string = '@can (\'update\', [$post])
+breeze
+@endcan';
+        $expected = '<?php if (Gate::check(\'update\', [$post])): ?>
+breeze
+<?php endif; ?>';
+        $this->assertEquals($expected, $compiler->compileString($string));
+    }
+
+    public function testCannotStatementsAreCompiled()
+    {
+        $compiler = new BladeCompiler($this->getFiles(), __DIR__);
+        $string = '@cannot (\'update\', [$post])
+breeze
+@endcannot';
+        $expected = '<?php if (Gate::denies(\'update\', [$post])): ?>
+breeze
+<?php endif; ?>';
+        $this->assertEquals($expected, $compiler->compileString($string));
+    }
+
     public function testElseStatementsAreCompiled()
     {
         $compiler = new BladeCompiler($this->getFiles(), __DIR__);

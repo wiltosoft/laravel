@@ -49,6 +49,13 @@ trait CrawlerTrait
     protected $uploads = [];
 
     /**
+     * Additional server variables for the request.
+     *
+     * @var array
+     */
+    protected $serverVariables = [];
+
+    /**
      * Visit the given URI with a GET request.
      *
      * @param  string  $uri
@@ -57,6 +64,32 @@ trait CrawlerTrait
     public function visit($uri)
     {
         return $this->makeRequest('GET', $uri);
+    }
+
+    /**
+     * Visit the given URI with a JSON request.
+     *
+     * @param  string  $method
+     * @param  string  $uri
+     * @param  array  $data
+     * @param  array  $headers
+     * @return $this
+     */
+    public function json($method, $uri, array $data = [], array $headers = [])
+    {
+        $content = json_encode($data);
+
+        $headers = array_merge([
+            'CONTENT_LENGTH' => mb_strlen($content, '8bit'),
+            'CONTENT_TYPE' => 'application/json',
+            'Accept' => 'application/json',
+        ], $headers);
+
+        $this->call(
+            $method, $uri, [], [], [], $this->transformHeadersToServerVars($headers), $content
+        );
+
+        return $this;
     }
 
     /**
@@ -256,7 +289,7 @@ trait CrawlerTrait
         } catch (PHPUnitException $e) {
             $message = $message ?: "A request to [{$uri}] failed. Received status code [{$status}].";
 
-            throw new PHPUnitException($message, null, $this->response->exception);
+            throw new HttpException($message, null, $this->response->exception);
         }
     }
 
@@ -292,6 +325,94 @@ trait CrawlerTrait
     }
 
     /**
+     * Assert that a given link is seen on the page.
+     *
+     * @param  string  $text
+     * @param  string|null  $url
+     * @return $this
+     */
+    public function seeLink($text, $url = null)
+    {
+        $message = "No links were found with expected text [{$text}]";
+
+        if ($url) {
+            $message .= " and URL [{$url}]";
+        }
+
+        $this->assertTrue($this->hasLink($text, $url), "{$message}.");
+
+        return $this;
+    }
+
+    /**
+     * Assert that a given link is not seen on the page.
+     *
+     * @param  string  $text
+     * @param  string|null  $url
+     * @return $this
+     */
+    public function dontSeeLink($text, $url = null)
+    {
+        $message = "A link was found with expected text [{$text}]";
+
+        if ($url) {
+            $message .= " and URL [{$url}]";
+        }
+
+        $this->assertFalse($this->hasLink($text, $url), "{$message}.");
+
+        return $this;
+    }
+
+    /**
+     * Add a root if the URL is relative (helper method of the hasLink function).
+     *
+     * @param  string  $url
+     * @return string
+     */
+    protected function addRootToRelativeUrl($url)
+    {
+        if (! Str::startsWith($url, ['http', 'https'])) {
+            return $this->app->make('url')->to($url);
+        }
+
+        return $url;
+    }
+
+    /**
+     * Check if the page has a link with the given $text and optional $url.
+     *
+     * @param  string  $text
+     * @param  string|null  $url
+     * @return bool
+     */
+    protected function hasLink($text, $url = null)
+    {
+        $links = $this->crawler->selectLink($text);
+
+        if ($links->count() == 0) {
+            return false;
+        }
+
+        // If the URL is null, we assume the developer only wants to find a link
+        // with the given text regardless of the URL. So, if we find the link
+        // we will return true now. Otherwise, we look for the given URL.
+        if ($url == null) {
+            return true;
+        }
+
+        $url = $this->addRootToRelativeUrl($url);
+
+        foreach ($links as $link) {
+            if ($link->getAttribute('href') == $url) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Assert that an input field contains the given value.
      *
      * @param  string  $selector
@@ -303,6 +424,23 @@ trait CrawlerTrait
         $this->assertSame(
             $expected, $this->getInputOrTextAreaValue($selector),
             "The field [{$selector}] does not contain the expected value [{$expected}]."
+        );
+
+        return $this;
+    }
+
+    /**
+     * Assert that an input field does not contain the given value.
+     *
+     * @param  string  $selector
+     * @param  string  $value
+     * @return $this
+     */
+    public function dontSeeInField($selector, $value)
+    {
+        $this->assertNotSame(
+            $this->getInputOrTextAreaValue($selector), $value,
+            "The input [{$selector}] should not contain the value [{$value}]."
         );
 
         return $this;
@@ -325,6 +463,22 @@ trait CrawlerTrait
     }
 
     /**
+     * Assert that the given checkbox is not selected.
+     *
+     * @param  string  $selector
+     * @return $this
+     */
+    public function dontSeeIsChecked($selector)
+    {
+        $this->assertFalse(
+            $this->isChecked($selector),
+            "The checkbox [{$selector}] is checked."
+        );
+
+        return $this;
+    }
+
+    /**
      * Assert that the expected value is selected.
      *
      * @param  string  $selector
@@ -333,9 +487,26 @@ trait CrawlerTrait
      */
     public function seeIsSelected($selector, $expected)
     {
-        $this->assertSame(
+        $this->assertEquals(
             $expected, $this->getSelectedValue($selector),
             "The field [{$selector}] does not contain the selected value [{$expected}]."
+        );
+
+        return $this;
+    }
+
+    /**
+     * Assert that the given value is not selected.
+     *
+     * @param  string  $selector
+     * @param  string  $value
+     * @return $this
+     */
+    public function dontSeeIsSelected($selector, $value)
+    {
+        $this->assertNotEquals(
+            $value, $this->getSelectedValue($selector),
+            "The field [{$selector}] contains the selected value [{$value}]."
         );
 
         return $this;
@@ -351,7 +522,7 @@ trait CrawlerTrait
      */
     protected function getInputOrTextAreaValue($selector)
     {
-        $field = $this->filterByNameOrId($selector);
+        $field = $this->filterByNameOrId($selector, ['input', 'textarea']);
 
         if ($field->count() == 0) {
             throw new Exception("There are no elements with the name or ID [$selector].");
@@ -883,14 +1054,35 @@ trait CrawlerTrait
      * Filter elements according to the given name or ID attribute.
      *
      * @param  string  $name
-     * @param  string  $element
+     * @param  array|string  $elements
      * @return \Symfony\Component\DomCrawler\Crawler
      */
-    protected function filterByNameOrId($name, $element = '*')
+    protected function filterByNameOrId($name, $elements = '*')
     {
         $name = str_replace('#', '', $name);
 
-        return $this->crawler->filter("{$element}#{$name}, {$element}[name='{$name}']");
+        $id = str_replace(['[', ']'], ['\\[', '\\]'], $name);
+
+        $elements = is_array($elements) ? $elements : [$elements];
+
+        array_walk($elements, function (&$element) use ($name, $id) {
+            $element = "{$element}#{$id}, {$element}[name='{$name}']";
+        });
+
+        return $this->crawler->filter(implode(', ', $elements));
+    }
+
+    /**
+     * Define a set of server variables to be sent with the requests.
+     *
+     * @param  array  $server
+     * @return $this
+     */
+    protected function withServerVariables(array $server)
+    {
+        $this->serverVariables = $server;
+
+        return $this;
     }
 
     /**
@@ -913,7 +1105,7 @@ trait CrawlerTrait
 
         $request = Request::create(
             $this->currentUri, $method, $parameters,
-            $cookies, $files, $server, $content
+            $cookies, $files, array_replace($this->serverVariables, $server), $content
         );
 
         $response = $kernel->handle($request);
